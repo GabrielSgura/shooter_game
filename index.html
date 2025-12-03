@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>shooter_game</title>
+    <!-- load tailwind css -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- load firebase sdks -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // global variables provided by the environment (mandatory use)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth, userId;
+        window.firebaseReady = false;
+        
+        // expose firebase functions globally for the main game script
+        window.saveMaxLevel = async (level) => {
+            if (!window.firebaseReady || !userId) return;
+            try {
+                const docRef = doc(db, 'artifacts', appId, 'users', userId, 'shooter_game_data', 'stats');
+                const docSnap = await getDoc(docRef);
+                
+                let currentMaxLevel = 0;
+                if (docSnap.exists()) {
+                    currentMaxLevel = docSnap.data().maxLevel || 0;
+                }
+                
+                if (level > currentMaxLevel) {
+                    await setDoc(docRef, { maxLevel: level, lastUpdated: new Date() }, { merge: true });
+                }
+            } catch (error) {
+                console.error("error saving max level:", error);
+            }
+        };
+
+        window.loadMaxLevel = async () => {
+            if (!window.firebaseReady || !userId) return 0;
+            try {
+                const docRef = doc(db, 'artifacts', appId, 'users', userId, 'shooter_game_data', 'stats');
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    return docSnap.data().maxLevel || 0;
+                }
+                return 0;
+            } catch (error) {
+                console.error("error loading max level:", error);
+                return 0;
+            }
+        };
+
+        // initialize and authenticate
+        const initFirebase = async () => {
+            if (!firebaseConfig) {
+                console.warn("firebase config not available. max level will not be saved.");
+                return;
+            }
+
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                
+                userId = auth.currentUser?.uid || crypto.randomUUID();
+                window.firebaseReady = true;
+                
+                // load max level initially for the title screen
+                const maxLevel = await window.loadMaxLevel();
+                window.game.maxLevel = maxLevel;
+                window.game.updateDisplay();
+
+            } catch (error) {
+                console.error("firebase initialization failed:", error);
+            }
+        };
+
+        window.onload = () => {
+            initFirebase();
+            if (window.game && window.game.startLoop) {
+                window.game.startLoop();
+            }
+        };
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=inter:wght@400;700;900&display=swap');
+        body { font-family: 'inter', sans-serif; }
+        /* ensure the body takes up the full viewport height on mobile */
+        html, body {
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        #game-container {
+            width: 100%;
+            max-width: 480px; 
+            height: 100vh;
+            max-height: 800px; 
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            background-color: #000;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+            border-radius: 0.5rem;
+            border: 2px solid #fff;
+        }
+        canvas {
+            background-color: #000;
+            touch-action: none;
+            flex-grow: 1;
+        }
+        .btn-upgrade {
+            transition: all 0.2s ease-in-out;
+            background-color: #000;
+            border: 1px solid #fff;
+            color: #fff;
+        }
+        .btn-upgrade:hover {
+            background-color: #111;
+            transform: translatey(-1px);
+            box-shadow: 0 2px 5px rgba(255, 255, 255, 0.3);
+        }
+        .btn-interact {
+             background-color: #fff;
+             color: #000;
+             font-weight: 700;
+             transition: background-color 0.1s;
+        }
+        .btn-interact:hover {
+            background-color: #eee;
+        }
+        /* custom heart svg styling */
+        .heart-icon {
+            width: 18px;
+            height: 18px;
+            fill: #fff; 
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body class="bg-black flex items-center justify-center">
+
+    <div id="game-container" class="relative overflow-hidden rounded-xl">
+
+        <!-- hud: always visible during playing and intermission -->
+        <div id="hud" class="absolute top-0 left-0 w-full p-3 flex justify-between items-center z-10 hidden text-white">
+            <div id="hearts-display" class="text-xl font-extrabold flex items-center gap-1">
+                <!-- hearts will be rendered here (svg) -->
+            </div>
+            <div class="text-sm font-bold">lvl: <span id="level-display">1</span></div>
+            <div id="coins-display" class="text-xl font-extrabold flex items-center gap-1">
+                <!-- coin icon: c for coin -->
+                <span class="text-sm border border-white px-1 rounded-full">c</span>
+                <span id="coin-count">0</span>
+            </div>
+        </div>
+
+        <!-- game canvas -->
+        <canvas id="gamecanvas"></canvas>
+
+        <!-- title screen -->
+        <div id="title-screen" class="absolute inset-0 bg-black flex flex-col items-center justify-center z-30">
+            <h1 class="text-4xl font-black text-white lowercase">shooter_game</h1>
+            <p class="mt-8 text-xl text-white opacity-75 animate-pulse lowercase">tap or click to start</p>
+            <p class="mt-4 text-xs text-white opacity-50 lowercase">max level: <span id="title-max-level">0</span></p>
+            <p class="mt-2 text-xs text-white opacity-50 lowercase">use finger/mouse x to move the ship.</p>
+        </div>
+
+        <!-- intermission screen (shop) - Increased Z-index to z-30 -->
+        <div id="intermission-screen" class="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-8 z-30 hidden">
+            <h2 class="text-3xl font-bold text-white mb-6 lowercase">level complete!</h2>
+            <div class="text-lg text-white mb-8">
+                <p class="lowercase">current coins: <span id="shop-coins-current" class="font-bold">0</span></p>
+                <!-- Display current hearts against the new static max hearts (10) -->
+                <p class="lowercase">current hearts: <span id="shop-hearts-current" class="font-bold">0 / 10</span></p>
+            </div>
+
+            <div class="space-y-4 w-full max-w-sm">
+                <!-- upgrade buttons -->
+                <button id="upgrade-damage-btn" class="btn-upgrade w-full p-3 rounded-lg shadow-xl flex justify-between items-center" data-stat="damage">
+                    <span class="lowercase">+ bullet damage (+1)</span>
+                    <span class="flex items-center gap-1">
+                        <span class="upgrade-price">5</span> <span class="text-xs lowercase">coins</span>
+                    </span>
+                </button>
+                <button id="upgrade-frequency-btn" class="btn-upgrade w-full p-3 rounded-lg shadow-xl flex justify-between items-center" data-stat="frequency">
+                    <span class="lowercase">* fire rate (-50ms delay)</span>
+                    <span class="flex items-center gap-1">
+                        <span class="upgrade-price">5</span> <span class="text-xs lowercase">coins</span>
+                    </span>
+                </button>
+                <button id="upgrade-hearts-btn" class="btn-upgrade w-full p-3 rounded-lg shadow-xl flex justify-between items-center" data-stat="hearts">
+                    <span class="lowercase">h buy 1 life (up to 10)</span>
+                    <span class="flex items-center gap-1">
+                        <span class="upgrade-price">5</span> <span class="text-xs lowercase">coins</span>
+                    </span>
+                </button>
+
+                <!-- start next level -->
+                <button id="start-next-level-btn" class="btn-interact w-full p-4 mt-8 text-xl font-black rounded-lg shadow-2xl lowercase">
+                    start level <span id="next-level-num">2</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- game over screen - Increased Z-index to z-30 -->
+        <div id="game-over-screen" class="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-8 z-30 hidden">
+            <h2 class="text-5xl font-black text-white mb-6 lowercase">game over</h2>
+            <p class="text-xl text-white mb-8 lowercase">you reached level <span id="max-level-reached" class="font-bold">1</span></p>
+            <p class="text-lg text-white opacity-75 font-bold mb-8 lowercase">highest level ever: <span id="game-over-max-level" class="font-bold">0</span></p>
+            <button id="restart-btn" class="btn-interact p-4 text-xl font-bold rounded-lg shadow-xl lowercase">
+                restart game
+            </button>
+        </div>
+
+    </div>
+
+    <script>
+        // --- game constants ---
+        const GAME_STATE = {
+            TITLE: 'TITLE',
+            PLAYING: 'PLAYING',
+            INTERMISSION: 'INTERMISSION',
+            GAME_OVER: 'GAME_OVER'
+        };
+
+        const canvas = document.getElementById('gamecanvas');
+        const ctx = canvas.getContext('2d');
+        const titleScreen = document.getElementById('title-screen'); 
+
+        // Ship and bullet dimensions
+        const SHIP_HEIGHT = 40; 
+        const SHIP_WIDTH = 50; 
+        const BULLET_SPEED = 7;
+        const BULLET_I_WIDTH = 4; 
+        const BULLET_I_HEIGHT = 12; 
+        // INCREASED clearance: defines the vertical space kept clear at the bottom for thumb clearance
+        const THUMB_CLEARANCE_Y = 120; // Increased to 120px
+
+        // meteor constants
+        const METEOR_BASE_HEALTH = [0, 1, 2, 3]; 
+        const METEOR_RADIUS = [0, 15, 25, 40]; 
+        const METEOR_SPEED_Y = 0.5;
+        const BOUNCE_FACTOR = 0.8; // friction loss on bounce
+
+        // --- game objects & state ---
+        let game = {
+            state: GAME_STATE.TITLE,
+            level: 1,
+            hearts: 3,
+            maxHearts: 10, // Max hearts is now a static cap (10)
+            coins: 0,
+            maxLevel: 0, 
+            ship: { x: 0, y: 0, targetX: 0 },
+            bullets: [],
+            meteors: [],
+            stats: {
+                damage: 1,
+                frequency: 500, // ms between shots
+                lastShot: 0,
+            },
+            shopPrices: {
+                damage: 5,
+                frequency: 5,
+                hearts: 5,
+            },
+            levelMeteors: {
+                size1: 0,
+                size2: 0,
+                size3: 0,
+                total: 0,
+                destroyed: 0,
+            },
+            spawn: {
+                timer: 0,
+                delay: 0,
+                index: 0,
+                types: [], 
+            }
+        };
+        window.game = game; 
+
+        // --- classes ---
+
+        class Bullet {
+            constructor(x, y, damage) {
+                this.x = x;
+                this.y = y;
+                this.damage = damage;
+            }
+            update() {
+                this.y -= BULLET_SPEED;
+            }
+            // bullet shape 'i' (vertical rectangle)
+            draw() {
+                ctx.fillStyle = '#FFF'; 
+                ctx.fillRect(this.x - BULLET_I_WIDTH / 2, this.y - BULLET_I_HEIGHT / 2, BULLET_I_WIDTH, BULLET_I_HEIGHT);
+            }
+        }
+
+        class Meteor {
+            constructor(x, y, size, health, angle) {
+                this.x = x;
+                this.y = y;
+                this.size = size;
+                this.radius = METEOR_RADIUS[size];
+                this.health = health;
+                this.maxHealth = health;
+                this.dx = Math.cos(angle) * METEOR_SPEED_Y * 2;
+                this.dy = Math.sin(angle) * METEOR_SPEED_Y * 2;
+                this.hitCooldown = 0; 
+                this.vertices = this.generateVertices();
+            }
+
+            generateVertices() {
+                const numPoints = 8 + this.size * 2;
+                const roughness = 0.4;
+                const points = [];
+                for (let i = 0; i < numPoints; i++) {
+                    const angle = (i / numPoints) * Math.PI * 2;
+                    const jitter = 1 + Math.random() * roughness - roughness / 2;
+                    points.push({ angle, jitter });
+                }
+                return points;
+            }
+
+            update() {
+                this.x += this.dx;
+                this.y += this.dy;
+                this.hitCooldown = Math.max(0, this.hitCooldown - 1);
+
+                // --- bounce off all four edges ---
+                // left and right wall bounce
+                if (this.x - this.radius < 0) {
+                    this.dx = Math.abs(this.dx) * BOUNCE_FACTOR;
+                    this.x = this.radius;
+                } else if (this.x + this.radius > canvas.width) {
+                    this.dx = -Math.abs(this.dx) * BOUNCE_FACTOR;
+                    this.x = canvas.width - this.radius;
+                }
+                
+                // top and bottom wall bounce
+                if (this.y - this.radius < 0) {
+                    this.dy = Math.abs(this.dy) * BOUNCE_FACTOR;
+                    this.y = this.radius;
+                } 
+                // Ship boundary adjustment: meteors bounce off the ship's playing area boundary (now adjusted for clearance)
+                else if (this.y + this.radius > game.ship.y + SHIP_HEIGHT / 2) { 
+                    this.dy = -Math.abs(this.dy) * BOUNCE_FACTOR;
+                    this.y = game.ship.y + SHIP_HEIGHT / 2 - this.radius;
+                }
+            }
+            
+            // function to draw a rugged, filled white shape (simulating an asteroid)
+            draw() {
+                ctx.fillStyle = '#FFF'; 
+                ctx.beginPath();
+                
+                // use stored vertices for static shape
+                this.vertices.forEach((v, i) => { 
+                    const r = this.radius * v.jitter;
+                    const px = this.x + r * Math.cos(v.angle);
+                    const py = this.y + r * Math.sin(v.angle);
+
+                    if (i === 0) {
+                        ctx.moveTo(px, py);
+                    } else {
+                        ctx.lineTo(px, py);
+                    }
+                });
+                ctx.closePath();
+                ctx.fill();
+
+                // optional: draw damage indicator (black outline for hit cooldown)
+                if (this.hitCooldown > 0) {
+                    ctx.strokeStyle = '#000'; 
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+            }
+        }
+
+        // --- utility functions ---
+
+        function setupCanvas() {
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+
+            // Set the ship's center (y) based on the new thumb clearance
+            const shipCenterY = canvas.height - THUMB_CLEARANCE_Y;
+            game.ship.y = shipCenterY;
+            game.ship.targetX = canvas.width / 2;
+
+            game.updateDisplay();
+
+            if (!canvas.__listenersAttached) {
+                canvas.addEventListener('mousemove', handleInput);
+                canvas.addEventListener('touchmove', handleInput, { passive: false });
+                canvas.__listenersAttached = true;
+            }
+        }
+
+        function handleInput(e) {
+            e.preventDefault();
+            let clientX;
+            if (e.touches) {
+                clientX = e.touches[0].clientX;
+            } else {
+                clientX = e.clientX;
+            }
+
+            const rect = canvas.getBoundingClientRect();
+            const shipX = clientX - rect.left;
+
+            // Constrain targetX to keep the ship within the left/right edges
+            game.ship.targetX = Math.max(SHIP_WIDTH / 2, Math.min(canvas.width - SHIP_WIDTH / 2, shipX));
+        }
+
+        // new spaceship shaped drawing function
+        function drawShip() {
+            const { x, y } = game.ship;
+            const h = SHIP_HEIGHT;
+            const w = SHIP_WIDTH;
+            
+            ctx.fillStyle = '#FFF'; 
+            ctx.beginPath();
+            
+            // main dart/arrow body
+            ctx.moveTo(x, y - h / 2); // 1. top point
+            ctx.lineTo(x + w / 2, y + h / 3); // 2. right wing tip (forward)
+            ctx.lineTo(x + w / 3, y + h / 2); // 3. right engine block (back)
+            ctx.lineTo(x - w / 3, y + h / 2); // 4. left engine block (back)
+            ctx.lineTo(x - w / 2, y + h / 3); // 5. left wing tip (forward)
+            ctx.closePath();
+            ctx.fill();
+            
+            // small black rectangle for cockpit/canopy detail
+            ctx.fillStyle = '#000';
+            ctx.fillRect(x - w / 10, y - h / 3, w / 5, h / 4); 
+            ctx.fillStyle = '#FFF'; 
+        }
+
+        function initLevel(level) {
+            game.level = level;
+            game.meteors = [];
+            
+            // level scaling
+            game.levelMeteors.size1 = 3 + (level - 1);
+            game.levelMeteors.size2 = 3 + (level - 1);
+            game.levelMeteors.size3 = 3 + (level - 1);
+            game.levelMeteors.total = game.levelMeteors.size1 + game.levelMeteors.size2 + game.levelMeteors.size3;
+            game.levelMeteors.destroyed = 0;
+
+            game.spawn.types = [];
+            for (let i = 0; i < game.levelMeteors.size1; i++) game.spawn.types.push(1);
+            for (let i = 0; i < game.levelMeteors.size2; i++) game.spawn.types.push(2);
+            for (let i = 0; i < game.levelMeteors.size3; i++) game.spawn.types.push(3);
+            
+            // shuffle spawn order
+            for (let i = game.spawn.types.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [game.spawn.types[i], game.spawn.types[j]] = [game.spawn.types[j], game.spawn.types[i]];
+            }
+
+            game.spawn.index = 0;
+            game.spawn.timer = 0;
+            game.spawn.delay = Math.random() * 3000 + 1000; 
+        }
+
+        function spawnMeteor() {
+            if (game.spawn.index >= game.levelMeteors.total) {
+                return; 
+            }
+
+            const size = game.spawn.types[game.spawn.index];
+            const radius = METEOR_RADIUS[size];
+            const health = METEOR_BASE_HEALTH[size] + (game.level - 1);
+
+            // spawn slightly off-screen or near top
+            const x = Math.random() * (canvas.width - 2 * radius) + radius;
+            const y = -radius; 
+            
+            // random angle for movement
+            const angleInRad = Math.random() * Math.PI * 2; // full 360 degrees
+
+            game.meteors.push(new Meteor(x, y, size, health, angleInRad));
+            game.spawn.index++;
+            game.spawn.timer = 0;
+            game.spawn.delay = Math.random() * 3000 + 1000; 
+        }
+
+
+        // --- game logic ---
+
+        function updateGame(deltaTime) {
+            // 1. ship movement
+            game.ship.x += (game.ship.targetX - game.ship.x) * 0.1;
+
+            // 2. auto-shooting
+            game.stats.lastShot += deltaTime;
+            if (game.stats.lastShot >= game.stats.frequency) {
+                const bulletX = game.ship.x;
+                const bulletY = game.ship.y - SHIP_HEIGHT / 2;
+                game.bullets.push(new Bullet(bulletX, bulletY, game.stats.damage));
+                game.stats.lastShot = 0;
+            }
+
+            // 3. update bullets
+            game.bullets.forEach(b => b.update());
+            game.bullets = game.bullets.filter(b => b.y > 0);
+
+            // 4. spawn meteors
+            if (game.spawn.index < game.levelMeteors.total) { 
+                game.spawn.timer += deltaTime;
+                if (game.spawn.timer >= game.spawn.delay) {
+                    spawnMeteor();
+                }
+            }
+            
+            // 5. update meteors
+            game.meteors.forEach(m => m.update());
+
+            // 6. collision detection
+            checkCollisions();
+
+            // 7. check level status
+            if (game.state === GAME_STATE.PLAYING) {
+                // LEVEL COMPLETE condition: All initial meteors have spawned AND the screen is clear
+                if (game.meteors.length === 0 && game.spawn.index === game.levelMeteors.total) {
+                    showIntermission();
+                }
+                if (game.hearts <= 0) {
+                    showGameOver();
+                }
+            }
+
+            game.updateDisplay();
+        }
+
+        function checkCollisions() {
+            const newMeteors = [];
+            
+            // bullet-meteor collision
+            game.bullets = game.bullets.filter(bullet => {
+                let hit = false;
+                game.meteors.forEach((meteor) => {
+                    const distance = Math.hypot(bullet.x - meteor.x, bullet.y - meteor.y);
+                    if (distance < meteor.radius + Math.max(BULLET_I_WIDTH, BULLET_I_HEIGHT) / 2) {
+                        hit = true;
+                        meteor.health -= bullet.damage;
+
+                        if (meteor.health <= 0) {
+                            game.levelMeteors.destroyed++;
+                            
+                            // splitting logic
+                            if (meteor.size === 2) {
+                                newMeteors.push(...splitMeteor(meteor, 1, game.level));
+                            } else if (meteor.size === 3) {
+                                newMeteors.push(...splitMeteor(meteor, 2, game.level));
+                            }
+
+                            if (meteor.size === 1) {
+                                game.coins += 1;
+                            }
+                            
+                            meteor.health = -1; // mark for removal
+                        }
+                    }
+                });
+                return !hit;
+            });
+
+            // filter out destroyed meteors and add new split ones
+            game.meteors = game.meteors.filter(m => m.health > 0).concat(newMeteors);
+
+            // ship-meteor collision
+            game.meteors.forEach(meteor => {
+                if (meteor.hitCooldown > 0) return;
+
+                const shipX = game.ship.x;
+                const shipY = game.ship.y;
+                const distance = Math.hypot(shipX - meteor.x, shipY - meteor.y);
+                
+                if (distance < meteor.radius + SHIP_WIDTH/4) { 
+                    game.hearts = Math.max(0, game.hearts - 1);
+                    meteor.hitCooldown = 180; 
+                    // visual feedback for hit
+                    document.getElementById('game-container').classList.add('animate-pulse', 'bg-white/10');
+                    setTimeout(() => {
+                        document.getElementById('game-container').classList.remove('animate-pulse', 'bg-white/10');
+                    }, 100);
+                }
+            });
+        }
+        
+        function splitMeteor(parent, newSize, level) {
+            const health = METEOR_BASE_HEALTH[newSize] + (level - 1);
+            const children = [];
+            // calculate two new angles for the split
+            const angle1 = Math.atan2(parent.dy, parent.dx) + Math.PI/4;
+            const angle2 = Math.atan2(parent.dy, parent.dx) - Math.PI/4;
+            
+            const offset = parent.radius / 2;
+
+            children.push(new Meteor(
+                parent.x - Math.cos(angle1) * offset, 
+                parent.y - Math.sin(angle1) * offset, 
+                newSize, 
+                health, 
+                angle1
+            ));
+
+            children.push(new Meteor(
+                parent.x + Math.cos(angle2) * offset, 
+                parent.y + Math.sin(angle2) * offset, 
+                newSize, 
+                health, 
+                angle2
+            ));
+
+            if (newSize === 1) {
+                game.coins += 2; 
+            }
+
+            return children;
+        }
+
+        // --- drawing loop ---
+        let lastTime = 0;
+        function draw(timestamp) {
+            const deltaTime = timestamp - lastTime;
+            lastTime = timestamp;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height); 
+
+            if (game.state === GAME_STATE.PLAYING) {
+                updateGame(deltaTime);
+
+                game.bullets.forEach(b => b.draw());
+                game.meteors.forEach(m => m.draw());
+                drawShip();
+            }
+
+            requestAnimationFrame(draw);
+        }
+
+        // --- ui updates (hearts updated to use svg) ---
+
+        // svg heart path data (a simple, filled heart)
+        const HEART_PATH = `
+            <svg class="heart-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+            </svg>
+        `;
+
+        game.updateDisplay = function() {
+            // hud update
+            document.getElementById('coin-count').textContent = game.coins;
+            document.getElementById('level-display').textContent = game.level;
+
+            const heartsDisplay = document.getElementById('hearts-display');
+            heartsDisplay.innerHTML = '';
+            
+            // draw filled hearts up to current health (max is 10)
+            for (let i = 0; i < game.hearts; i++) {
+                const container = document.createElement('span');
+                container.innerHTML = HEART_PATH; 
+                heartsDisplay.appendChild(container);
+            }
+
+            document.getElementById('title-max-level').textContent = game.maxLevel;
+
+            // intermission update
+            if (game.state === GAME_STATE.INTERMISSION) {
+                document.getElementById('shop-coins-current').textContent = game.coins;
+                document.getElementById('shop-hearts-current').textContent = `${game.hearts} / ${game.maxHearts}`;
+                document.getElementById('next-level-num').textContent = game.level + 1;
+
+                document.getElementById('upgrade-damage-btn').querySelector('.upgrade-price').textContent = game.shopPrices.damage;
+                document.getElementById('upgrade-frequency-btn').querySelector('.upgrade-price').textContent = game.shopPrices.frequency;
+                document.getElementById('upgrade-hearts-btn').querySelector('.upgrade-price').textContent = game.shopPrices.hearts;
+
+                const heartsBtn = document.getElementById('upgrade-hearts-btn');
+                // Disable the hearts button if the player is at max health (10)
+                if (game.hearts >= game.maxHearts) {
+                    heartsBtn.disabled = true;
+                    heartsBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                    heartsBtn.querySelector('span:first-child').textContent = 'h buy 1 life (max health)';
+                    heartsBtn.querySelector('.upgrade-price').textContent = 'max';
+                } else {
+                    heartsBtn.disabled = false;
+                    heartsBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                    heartsBtn.querySelector('span:first-child').textContent = 'h buy 1 life (up to 10)';
+                }
+            }
+        };
+
+        // --- screen control ---
+
+        function hideAllScreens() {
+            document.getElementById('title-screen').classList.add('hidden');
+            document.getElementById('intermission-screen').classList.add('hidden');
+            document.getElementById('game-over-screen').classList.add('hidden');
+        }
+
+        function showTitleScreen() {
+            hideAllScreens();
+            game.state = GAME_STATE.TITLE;
+            document.getElementById('title-screen').classList.remove('hidden');
+            document.getElementById('hud').classList.add('hidden'); // hide HUD on title
+            game.updateDisplay();
+        }
+
+        function showPlayingScreen() {
+            hideAllScreens();
+            game.state = GAME_STATE.PLAYING;
+            document.getElementById('hud').classList.remove('hidden'); // show HUD during play
+            initLevel(game.level);
+            game.updateDisplay();
+        }
+        
+        function showIntermission() {
+            hideAllScreens();
+            game.state = GAME_STATE.INTERMISSION;
+            document.getElementById('hud').classList.remove('hidden'); // show HUD during shop
+            document.getElementById('intermission-screen').classList.remove('hidden');
+            game.updateDisplay();
+        }
+        
+        function showGameOver() {
+            hideAllScreens();
+            game.state = GAME_STATE.GAME_OVER;
+            
+            if (game.level > game.maxLevel) {
+                game.maxLevel = game.level;
+                if (window.saveMaxLevel) {
+                    window.saveMaxLevel(game.level);
+                }
+            }
+
+            document.getElementById('max-level-reached').textContent = game.level;
+            document.getElementById('game-over-max-level').textContent = game.maxLevel;
+            document.getElementById('game-over-screen').classList.remove('hidden');
+        }
+
+        // --- game flow ---
+        
+        function initializeGameState() {
+            game.level = 1;
+            game.hearts = 3; 
+            game.maxHearts = 10; // Static max heart cap
+            game.coins = 0;
+            game.bullets = [];
+            game.meteors = [];
+            game.stats = { damage: 1, frequency: 500, lastShot: 0 };
+            game.shopPrices = { damage: 5, frequency: 5, hearts: 5 };
+
+            if (window.loadMaxLevel) {
+                return window.loadMaxLevel().then(level => {
+                    game.maxLevel = level;
+                    game.updateDisplay();
+                });
+            }
+            game.updateDisplay();
+            return Promise.resolve();
+        }
+
+        function startGame() {
+            if (game.state === GAME_STATE.TITLE) {
+                initializeGameState().then(() => {
+                     showPlayingScreen();
+                });
+            }
+        }
+
+        function resetGame() {
+            initializeGameState().then(() => {
+                showTitleScreen();
+            });
+        }
+
+        function startNextLevel() {
+            // Player no longer automatically heals to max hearts when starting next level
+            if (game.state !== GAME_STATE.INTERMISSION) return; 
+            
+            game.level++;
+            // game.hearts remains as is
+            showPlayingScreen();
+        }
+
+        // --- shop handler ---
+
+        document.getElementById('intermission-screen').addEventListener('click', (e) => {
+            const button = e.target.closest('button[data-stat]');
+            // Guard against clicks when not in intermission
+            if (!button || game.state !== GAME_STATE.INTERMISSION) return;
+
+            const stat = button.dataset.stat;
+            const price = game.shopPrices[stat];
+
+            if (game.coins >= price) {
+                
+                switch (stat) {
+                    case 'damage':
+                        game.coins -= price;
+                        game.shopPrices.damage *= 2; 
+                        game.stats.damage += 1;
+                        break;
+                    case 'frequency':
+                        game.coins -= price;
+                        game.shopPrices.frequency *= 2; 
+                        // Increase frequency boost (decreases delay by 50ms)
+                        game.stats.frequency = Math.max(50, game.stats.frequency - 50); 
+                        break;
+                    case 'hearts':
+                        // Check if player needs hearts before proceeding
+                        if (game.hearts < game.maxHearts) {
+                            game.coins -= price;
+                            game.shopPrices.hearts *= 2;
+                            // Buy 1 life, capped at maxHearts (10)
+                            game.hearts = Math.min(game.maxHearts, game.hearts + 1); 
+                        } else {
+                            // Already max health, don't spend coin or trigger pulse
+                            return; 
+                        }
+                        break;
+                }
+                game.updateDisplay();
+            } else {
+                // visual feedback for not enough coins
+                button.classList.add('ring-4', 'ring-white/50', 'animate-pulse');
+                setTimeout(() => {
+                    button.classList.remove('ring-4', 'ring-white/50', 'animate-pulse');
+                }, 500);
+            }
+        });
+
+        document.getElementById('start-next-level-btn').addEventListener('click', startNextLevel);
+        document.getElementById('restart-btn').addEventListener('click', resetGame);
+        
+        // --- tap/click to start ---
+        
+        titleScreen.addEventListener('mousedown', startGame);
+        titleScreen.addEventListener('touchend', (e) => {
+            e.preventDefault(); 
+            setTimeout(startGame, 50); 
+        }, { passive: false });
+        titleScreen.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+        }, { passive: false });
+
+        // --- initialization ---
+
+        function init() {
+            setupCanvas();
+            window.addEventListener('resize', setupCanvas);
+            
+            // start the draw loop, it's safe to run even in the title state
+            if (!lastTime) {
+                game.startLoop();
+            }
+            
+            showTitleScreen();
+        }
+        
+        game.startLoop = function() {
+            if (!lastTime) {
+                requestAnimationFrame(draw);
+            }
+        }
+        
+        document.addEventListener('DOMContentLoaded', init);
+        
+    </script>
+</body>
+</html>
+
