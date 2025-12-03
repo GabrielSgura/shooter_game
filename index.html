@@ -97,7 +97,7 @@
         @import url('https://fonts.googleapis.com/css2?family=inter:wght@400;700;900&display=swap');
         body { font-family: 'inter', sans-serif; }
         
-        /* CRITICAL FIX: Ensure the entire page takes up 100% of the screen and hides overflow */
+        /* Ensure html and body are full screen for centering the game container */
         html, body {
             height: 100%;
             margin: 0;
@@ -108,9 +108,8 @@
         #game-container {
             width: 100%;
             max-width: 480px; 
-            /* Use the calculated variable for height instead of 100vh */
-            /* Removed max-height: 800px to avoid external constraints */
-            height: var(--app-height); 
+            /* FIXED HEIGHT: Safe height that fits most mobile viewports, protecting the HUD */
+            height: 700px; 
             margin: 0 auto;
             display: flex;
             flex-direction: column;
@@ -249,8 +248,7 @@
         const BULLET_SPEED = 7;
         const BULLET_I_WIDTH = 4; 
         const BULLET_I_HEIGHT = 12; 
-        // INCREASED clearance: defines the vertical space kept clear at the bottom for thumb clearance
-        const THUMB_CLEARANCE_Y = 120; // Increased to 120px
+        const THUMB_CLEARANCE_Y = 120; 
 
         // meteor constants
         const METEOR_BASE_HEALTH = [0, 1, 2, 3]; 
@@ -263,7 +261,7 @@
             state: GAME_STATE.TITLE,
             level: 1,
             hearts: 3,
-            maxHearts: 10, // Max hearts is now a static cap (10)
+            maxHearts: 10, 
             coins: 0,
             maxLevel: 0, 
             ship: { x: 0, y: 0, targetX: 0 },
@@ -359,7 +357,7 @@
                     this.dy = Math.abs(this.dy) * BOUNCE_FACTOR;
                     this.y = this.radius;
                 } 
-                // Ship boundary adjustment: meteors bounce off the ship's playing area boundary (now adjusted for clearance)
+                // Ship boundary adjustment: meteors bounce off the ship's playing area boundary
                 else if (this.y + this.radius > game.ship.y + SHIP_HEIGHT / 2) { 
                     this.dy = -Math.abs(this.dy) * BOUNCE_FACTOR;
                     this.y = game.ship.y + SHIP_HEIGHT / 2 - this.radius;
@@ -397,16 +395,11 @@
 
         // --- utility functions ---
         
-        // Function to fix 100vh on mobile browsers (using innerHeight)
-        function setAppHeight() {
-            const doc = document.documentElement;
-            // Set the CSS variable on the root element
-            doc.style.setProperty('--app-height', `${window.innerHeight}px`);
-        }
-
         function setupCanvas() {
+            // Horizontal responsiveness is kept by using clientWidth
             canvas.width = canvas.clientWidth;
-            canvas.height = canvas.clientHeight;
+            // Height is derived from the fixed height of the game-container div
+            canvas.height = canvas.clientHeight; 
 
             // Set the ship's center (y) based on the new thumb clearance
             const shipCenterY = canvas.height - THUMB_CLEARANCE_Y;
@@ -874,15 +867,10 @@
         // --- initialization ---
 
         function init() {
-            // 1. Mobile viewport fix: set height before setting up canvas
-            setAppHeight();
-            // 2. Listen for orientation changes and resize events to reset height
-            window.addEventListener('resize', setAppHeight);
-            
             setupCanvas();
-            window.addEventListener('resize', setupCanvas);
+            // We still need to listen for horizontal resize (like rotating the device)
+            window.addEventListener('resize', setupCanvas); 
             
-            // start the draw loop, it's safe to run even in the title state
             if (!lastTime) {
                 game.startLoop();
             }
