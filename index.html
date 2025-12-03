@@ -97,11 +97,11 @@
         @import url('https://fonts.googleapis.com/css2?family=inter:wght@400;700;900&display=swap');
         body { font-family: 'inter', sans-serif; }
         
-        /* FIX: Set html and body to 100% height and overflow hidden */
+        /* CRITICAL FIX: Ensure the entire page takes up 100% of the screen and hides overflow */
         html, body {
             height: 100%;
             margin: 0;
-            overflow: hidden;
+            overflow: hidden; /* Prevent scrolling */
             background-color: #000;
         }
 
@@ -109,8 +109,8 @@
             width: 100%;
             max-width: 480px; 
             /* Use the calculated variable for height instead of 100vh */
+            /* Removed max-height: 800px to avoid external constraints */
             height: var(--app-height); 
-            max-height: 800px; 
             margin: 0 auto;
             display: flex;
             flex-direction: column;
@@ -397,9 +397,10 @@
 
         // --- utility functions ---
         
-        // Function to fix 100vh on mobile browsers
+        // Function to fix 100vh on mobile browsers (using innerHeight)
         function setAppHeight() {
             const doc = document.documentElement;
+            // Set the CSS variable on the root element
             doc.style.setProperty('--app-height', `${window.innerHeight}px`);
         }
 
@@ -873,8 +874,9 @@
         // --- initialization ---
 
         function init() {
-            // Mobile viewport fix: set height before setting up canvas
+            // 1. Mobile viewport fix: set height before setting up canvas
             setAppHeight();
+            // 2. Listen for orientation changes and resize events to reset height
             window.addEventListener('resize', setAppHeight);
             
             setupCanvas();
