@@ -86,27 +86,30 @@
             }
         };
 
-        window.onload = () => {
+        window.addEventListener('load', () => {
             initFirebase();
             if (window.game && window.game.startLoop) {
                 window.game.startLoop();
             }
-        };
+        });
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=inter:wght@400;700;900&display=swap');
         body { font-family: 'inter', sans-serif; }
-        /* ensure the body takes up the full viewport height on mobile */
+        
+        /* FIX: Set html and body to 100% height and overflow hidden */
         html, body {
             height: 100%;
             margin: 0;
             overflow: hidden;
             background-color: #000;
         }
+
         #game-container {
             width: 100%;
             max-width: 480px; 
-            height: 100vh;
+            /* Use the calculated variable for height instead of 100vh */
+            height: var(--app-height); 
             max-height: 800px; 
             margin: 0 auto;
             display: flex;
@@ -393,6 +396,12 @@
         }
 
         // --- utility functions ---
+        
+        // Function to fix 100vh on mobile browsers
+        function setAppHeight() {
+            const doc = document.documentElement;
+            doc.style.setProperty('--app-height', `${window.innerHeight}px`);
+        }
 
         function setupCanvas() {
             canvas.width = canvas.clientWidth;
@@ -864,6 +873,10 @@
         // --- initialization ---
 
         function init() {
+            // Mobile viewport fix: set height before setting up canvas
+            setAppHeight();
+            window.addEventListener('resize', setAppHeight);
+            
             setupCanvas();
             window.addEventListener('resize', setupCanvas);
             
